@@ -1,0 +1,23 @@
+[package]
+name = "ledgermem"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Official Rust SDK for the LedgerMem API"
+license = "MIT"
+repository = "https://github.com/ledgermem/ledgermem-rust"
+homepage = "https://proofly.dev"
+readme = "README.md"
+keywords = ["ledgermem", "memory", "ai", "agents", "sdk"]
+categories = ["api-bindings"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
