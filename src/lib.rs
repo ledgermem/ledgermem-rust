@@ -151,9 +151,12 @@ impl Client {
 
             let status = resp.status();
             if is_retryable_status(status) && attempt < self.max_retries {
+                // Capture Retry-After before we drain the body — once the
+                // body is consumed, the headers reference is gone too.
+                let hint = parse_retry_after(resp.headers().get(reqwest::header::RETRY_AFTER));
                 // Drain the body so the connection can be reused.
                 let _ = resp.bytes().await;
-                backoff_sleep(attempt).await;
+                backoff_sleep_hinted(attempt, hint).await;
                 attempt += 1;
                 continue;
             }
@@ -179,20 +182,49 @@ impl Client {
 }
 
 fn is_retryable_status(status: StatusCode) -> bool {
+    // 501 Not Implemented is a permanent failure — retrying wastes round-trips.
+    if status == StatusCode::NOT_IMPLEMENTED {
+        return false;
+    }
     status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
 fn is_retryable_transport(err: &reqwest::Error) -> bool {
-    // Network-level errors (connect, timeout) are safe to retry.
-    err.is_timeout() || err.is_connect() || err.is_request()
+    // Only retry true network-level failures. `is_request()` is too broad
+    // (it includes builder/body errors which will fail identically on retry)
+    // so we restrict to timeout + connect.
+    err.is_timeout() || err.is_connect()
+}
+
+/// Parse a Retry-After header value (delta-seconds form only), capped at
+/// [`RETRY_MAX_DELAY_MS`] so a hostile server cannot stall the client.
+/// HTTP-date form is intentionally ignored to avoid pulling in a date
+/// parsing dependency — servers that issue it will fall back to backoff.
+fn parse_retry_after(header: Option<&header::HeaderValue>) -> Option<u64> {
+    let raw = header?.to_str().ok()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse::<u64>()
+        .ok()
+        .map(|secs| secs.saturating_mul(1000).min(RETRY_MAX_DELAY_MS))
 }
 
 async fn backoff_sleep(attempt: u32) {
+    backoff_sleep_hinted(attempt, None).await
+}
+
+async fn backoff_sleep_hinted(attempt: u32, hint_ms: Option<u64>) {
     use rand::Rng;
-    let capped = (RETRY_BASE_DELAY_MS.saturating_mul(1u64 << attempt.min(20)))
-        .min(RETRY_MAX_DELAY_MS);
-    let jittered = rand::thread_rng().gen_range(0..=capped);
-    tokio::time::sleep(Duration::from_millis(jittered)).await;
+    let delay_ms = match hint_ms {
+        Some(ms) => ms.min(RETRY_MAX_DELAY_MS),
+        None => {
+            let capped = (RETRY_BASE_DELAY_MS.saturating_mul(1u64 << attempt.min(20)))
+                .min(RETRY_MAX_DELAY_MS);
+            rand::thread_rng().gen_range(0..=capped)
+        }
+    };
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 }
 
 #[derive(Debug, Deserialize)]
