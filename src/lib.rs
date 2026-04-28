@@ -157,12 +157,12 @@ impl Memories<'_> {
     }
 
     pub async fn update(&self, id: &str, input: UpdateMemoryInput) -> Result<Memory> {
-        let path = format!("/v1/memories/{id}");
+        let path = format!("/v1/memories/{}", encode_path_segment(id));
         self.client.request(Method::PATCH, &path, &[], Some(&input)).await
     }
 
     pub async fn delete(&self, id: &str) -> Result<()> {
-        let path = format!("/v1/memories/{id}");
+        let path = format!("/v1/memories/{}", encode_path_segment(id));
         let _: Empty = self.client.request::<Empty, ()>(Method::DELETE, &path, &[], None).await?;
         Ok(())
     }
@@ -186,6 +186,23 @@ impl Memories<'_> {
 
 #[derive(Debug, Default, Deserialize)]
 struct Empty {}
+
+fn encode_path_segment(s: &str) -> String {
+    // Percent-encode characters that would break a path segment. We avoid
+    // pulling in `percent-encoding` to keep the dependency surface small.
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        let c = *b;
+        let unreserved = c.is_ascii_alphanumeric()
+            || matches!(c, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            out.push(c as char);
+        } else {
+            out.push_str(&format!("%{:02X}", c));
+        }
+    }
+    out
+}
 
 /// A single stored memory.
 #[derive(Debug, Default, Clone, Deserialize)]
