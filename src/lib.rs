@@ -10,6 +10,9 @@ use thiserror::Error;
 
 const DEFAULT_BASE_URL: &str = "https://api.proofly.dev";
 const USER_AGENT: &str = concat!("ledgermem-rust/", env!("CARGO_PKG_VERSION"));
+const DEFAULT_MAX_RETRIES: u32 = 3;
+const RETRY_BASE_DELAY_MS: u64 = 200;
+const RETRY_MAX_DELAY_MS: u64 = 5_000;
 
 /// Configuration for [`Client`].
 #[derive(Debug, Default, Clone)]
@@ -18,6 +21,9 @@ pub struct ClientConfig {
     pub workspace_id: Option<String>,
     pub base_url: Option<String>,
     pub timeout: Option<Duration>,
+    /// Maximum retry attempts on 429 / 5xx and transient transport errors.
+    /// Defaults to [`DEFAULT_MAX_RETRIES`] (3) when `None`.
+    pub max_retries: Option<u32>,
 }
 
 /// Errors returned by the SDK.
@@ -39,6 +45,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Client {
     http: HttpClient,
     base_url: String,
+    max_retries: u32,
 }
 
 impl Client {
@@ -85,6 +92,7 @@ impl Client {
         Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
+            max_retries: cfg.max_retries.unwrap_or(DEFAULT_MAX_RETRIES),
         })
     }
 
@@ -110,32 +118,81 @@ impl Client {
         B: Serialize + ?Sized,
     {
         let url = format!("{}{}", self.base_url, path);
-        let mut req = self.http.request(method, &url);
-        if !query.is_empty() {
-            req = req.query(query);
+        // Pre-serialize the body once so we can resend it across retries.
+        let body_bytes = match body {
+            Some(b) => Some(serde_json::to_vec(b)?),
+            None => None,
+        };
+
+        let mut attempt: u32 = 0;
+        loop {
+            let mut req = self.http.request(method.clone(), &url);
+            if !query.is_empty() {
+                req = req.query(query);
+            }
+            if let Some(b) = &body_bytes {
+                req = req
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(b.clone());
+            }
+
+            let send_result = req.send().await;
+            let resp = match send_result {
+                Ok(r) => r,
+                Err(err) => {
+                    if attempt < self.max_retries && is_retryable_transport(&err) {
+                        backoff_sleep(attempt).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(Error::Http(err));
+                }
+            };
+
+            let status = resp.status();
+            if is_retryable_status(status) && attempt < self.max_retries {
+                // Drain the body so the connection can be reused.
+                let _ = resp.bytes().await;
+                backoff_sleep(attempt).await;
+                attempt += 1;
+                continue;
+            }
+
+            if status == StatusCode::NO_CONTENT {
+                return Ok(T::default());
+            }
+            let bytes = resp.bytes().await?;
+            if !status.is_success() {
+                let body = String::from_utf8_lossy(&bytes).into_owned();
+                let message = serde_json::from_slice::<ApiErrorBody>(&bytes)
+                    .ok()
+                    .and_then(|b| b.message.or(b.error))
+                    .unwrap_or_default();
+                return Err(Error::Api { status: status.as_u16(), message, body });
+            }
+            if bytes.is_empty() {
+                return Ok(T::default());
+            }
+            return Ok(serde_json::from_slice(&bytes)?);
         }
-        if let Some(b) = body {
-            req = req.json(b);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if status == StatusCode::NO_CONTENT {
-            return Ok(T::default());
-        }
-        let bytes = resp.bytes().await?;
-        if !status.is_success() {
-            let body = String::from_utf8_lossy(&bytes).into_owned();
-            let message = serde_json::from_slice::<ApiErrorBody>(&bytes)
-                .ok()
-                .and_then(|b| b.message.or(b.error))
-                .unwrap_or_default();
-            return Err(Error::Api { status: status.as_u16(), message, body });
-        }
-        if bytes.is_empty() {
-            return Ok(T::default());
-        }
-        Ok(serde_json::from_slice(&bytes)?)
     }
+}
+
+fn is_retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn is_retryable_transport(err: &reqwest::Error) -> bool {
+    // Network-level errors (connect, timeout) are safe to retry.
+    err.is_timeout() || err.is_connect() || err.is_request()
+}
+
+async fn backoff_sleep(attempt: u32) {
+    use rand::Rng;
+    let capped = (RETRY_BASE_DELAY_MS.saturating_mul(1u64 << attempt.min(20)))
+        .min(RETRY_MAX_DELAY_MS);
+    let jittered = rand::thread_rng().gen_range(0..=capped);
+    tokio::time::sleep(Duration::from_millis(jittered)).await;
 }
 
 #[derive(Debug, Deserialize)]
