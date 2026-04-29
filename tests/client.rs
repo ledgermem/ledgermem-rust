@@ -1,4 +1,4 @@
-use ledgermem::{AddMemoryInput, Client, ClientConfig, SearchInput};
+use getmnemo::{AddMemoryInput, Client, ClientConfig, SearchInput};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -59,7 +59,7 @@ async fn search_returns_api_error_on_401() {
         .await
         .expect_err("expected api error");
     match err {
-        ledgermem::Error::Api { status, message, .. } => {
+        getmnemo::Error::Api { status, message, .. } => {
             assert_eq!(status, 401);
             assert_eq!(message, "bad key");
         }

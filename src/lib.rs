@@ -1,4 +1,4 @@
-//! Official Rust SDK for the LedgerMem API.
+//! Official Rust SDK for the Mnemo API.
 
 use std::collections::HashMap;
 use std::env;
@@ -8,8 +8,8 @@ use reqwest::{header, Client as HttpClient, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const DEFAULT_BASE_URL: &str = "https://api.proofly.dev";
-const USER_AGENT: &str = concat!("ledgermem-rust/", env!("CARGO_PKG_VERSION"));
+const DEFAULT_BASE_URL: &str = "https://api.getmnemo.xyz";
+const USER_AGENT: &str = concat!("getmnemo-rust/", env!("CARGO_PKG_VERSION"));
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY_MS: u64 = 200;
 const RETRY_MAX_DELAY_MS: u64 = 5_000;
@@ -29,18 +29,18 @@ pub struct ClientConfig {
 /// Errors returned by the SDK.
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("ledgermem: http error: {0}")]
+    #[error("getmnemo: http error: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("ledgermem: decode error: {0}")]
+    #[error("getmnemo: decode error: {0}")]
     Decode(#[from] serde_json::Error),
-    #[error("ledgermem: api error: {status} {message}")]
+    #[error("getmnemo: api error: {status} {message}")]
     Api { status: u16, message: String, body: String },
 }
 
 /// API result alias.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// LedgerMem API client.
+/// Mnemo API client.
 #[derive(Debug, Clone)]
 pub struct Client {
     http: HttpClient,
@@ -51,13 +51,13 @@ pub struct Client {
 impl Client {
     /// Build a new client. Falls back to env vars for any missing config.
     pub fn new(cfg: ClientConfig) -> Result<Self> {
-        let api_key = cfg.api_key.or_else(|| env::var("LEDGERMEM_API_KEY").ok());
+        let api_key = cfg.api_key.or_else(|| env::var("GETMNEMO_API_KEY").ok());
         let workspace_id = cfg
             .workspace_id
-            .or_else(|| env::var("LEDGERMEM_WORKSPACE_ID").ok());
+            .or_else(|| env::var("GETMNEMO_WORKSPACE_ID").ok());
         let base_url = cfg
             .base_url
-            .or_else(|| env::var("LEDGERMEM_API_URL").ok())
+            .or_else(|| env::var("GETMNEMO_API_URL").ok())
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         let timeout = cfg.timeout.unwrap_or_else(|| Duration::from_secs(30));
 
